@@ -1,8 +1,16 @@
 - Project Initialization(FastApi):
  uv init .
+
 - Add package:
 uv add fastapi
 uv add fastapi-users[sqlalchemy] --to handle authentication and authorization
 uv add imagekitio --to handle images and videos
 uv add uvicorn[standard] --web server that allows us to serve fastapi application
 uv add aiosqlite --to interact with database
+
+-to change the python interpreter:
+Press Ctrl+Shift+P
+Type "Python: Select Interpreter"
+
+-to run:
+uv run .\main.py
