@@ -14,3 +14,6 @@ Type "Python: Select Interpreter"
 
 -to run:
 uv run .\main.py
+
+-query paramters:
+that comes after ? in @app.get("/posts?query-here")
