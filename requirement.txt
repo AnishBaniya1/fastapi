@@ -3,6 +3,7 @@
 
 - Add package:
 uv add fastapi
+uv add python-dotenv
 uv add fastapi-users[sqlalchemy] --to handle authentication and authorization
 uv add imagekitio --to handle images and videos
 uv add uvicorn[standard] --web server that allows us to serve fastapi application
