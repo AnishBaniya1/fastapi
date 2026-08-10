@@ -1,49 +1,109 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Depends
 from src.schemas import PostCreate, PostResponse
 from src.db import Post, create_db_and_tables, get_async_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from contextlib import asynccontextmanager
+from sqlalchemy import select
+from src.images import imagekit
+import os
+import shutil
+import uuid
+import tempfile
 
+# Runs when the app starts and creates the database tables
 @asynccontextmanager
-async def lifespan(app:FastAPI):
+async def lifespan(app: FastAPI):
     await create_db_and_tables()
     yield
 
-# Create FastAPI application instance
-# This is the main app object that handles all routes and requests
+# FastAPI app instance
 app = FastAPI(lifespan=lifespan)
 
-# Define a GET endpoint at /hello-world
-# @app.get() is a decorator that registers this function as a route handler
+# Upload a file, send it to ImageKit, and save post details in the database
+@app.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    caption: str = Form(""),
+    session: AsyncSession = Depends(get_async_session)
+):
+    temp_file_path = None
 
-text_posts = {
-    1: {"title": "New Post", "Content": "Cool test post"},
-    2: {"title": "Learning Python", "Content": "Python is fun and powerful."},
-    3: {"title": "Flutter Journey", "Content": "Building beautiful mobile apps."},
-    4: {"title": "Morning Thoughts", "Content": "Start small, grow daily."},
-    5: {"title": "Tech Update", "Content": "Exploring modern dev tools."},
-    6: {"title": "AI Notes", "Content": "Machine learning is evolving fast."},
-    7: {"title": "Backend Basics", "Content": "APIs connect everything together."},
-    8: {"title": "Debug Mode", "Content": "Errors help us learn better."},
-    9: {"title": "Daily Motivation", "Content": "Consistency beats talent."},
-    10: {"title": "Code Life", "Content": "Write clean and simple code."}
-}
+    try:
+        # Save the uploaded file to a temporary local file first
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
+            temp_file_path = temp_file.name
+            shutil.copyfileobj(file.file, temp_file)
 
+        # Open the temp file and upload it to ImageKit
+        with open(temp_file_path, "rb") as f:
+            upload_result = imagekit.files.upload(
+                file=f,
+                file_name=file.filename,
+                use_unique_file_name=True,
+                tags=["backend-upload"]
+            )
 
-@app.get("/posts")
-def get_all_posts(limit: int = None):
-    if limit:
-        return list(text_posts.values())[:limit]
-    return text_posts
+            # Store the uploaded file info in the database
+            post = Post(
+                caption=caption,
+                url=upload_result.url,
+                file_type="video" if file.content_type.startswith("video/") else "image",
+                file_name=upload_result.name
+            )
+            session.add(post)
+            await session.commit()
+            await session.refresh(post)
+            return post
 
-@app.get("/posts/{id}") #path param
-def get_post(id:int):
-    if id not in text_posts:
-        raise HTTPException(status_code=404, detail="Post Not Found")
-    return text_posts.get(id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/posts")
-def create_post(post:PostCreate) -> PostResponse:
-    new_post={"title":post.title, "Content":post.content}
-    text_posts[max(text_posts.keys())+1]=new_post
-    return new_post
+    finally:
+        # Remove the temp file and close the uploaded file handle
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
+        file.file.close()
+
+# Return all posts in reverse chronological order
+@app.get("/feed")
+async def get_feed(
+    session: AsyncSession = Depends(get_async_session)
+):
+    result = await session.execute(select(Post).order_by(Post.created_at.desc()))
+    posts = [row[0] for row in result.all()]
+
+    # Convert ORM objects into simple JSON-friendly dictionaries
+    posts_data = []
+    for post in posts:
+        posts_data.append(
+            {
+                "id": str(post.id),
+                "caption": post.caption,
+                "url": post.url,
+                "file_type": post.file_type,
+                "file_name": post.file_name,
+                "created_at": post.created_at.isoformat()
+            }
+        )
+
+    return {"posts": posts_data}
+
+# Delete a post by its ID
+@app.delete("/posts/{post_id}")
+async def delete_post(post_id: str, session: AsyncSession = Depends(get_async_session)):
+    try:
+        post_uuid = uuid.UUID(post_id)
+
+        # Find the post first so we can delete it safely
+        result = await session.execute(select(Post).where(Post.id == post_uuid))
+        post = result.scalars().first()
+
+        if not post:
+            raise HTTPException(status_code=404, detail="Post not found")
+
+        await session.delete(post)
+        await session.commit()
+
+        return {"success": True, "message": "Post deleted succesfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
